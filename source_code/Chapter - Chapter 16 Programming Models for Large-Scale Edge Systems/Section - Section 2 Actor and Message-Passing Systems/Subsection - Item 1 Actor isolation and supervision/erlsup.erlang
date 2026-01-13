@@ -1,0 +1,35 @@
+%% supervisor_edge.erl
+%% Production-ready supervisor module using OTP behaviour.
+-module(supervisor_edge).
+-behaviour(supervisor).
+
+%% API
+-export([start_link/0]).
+%% Supervisor callbacks
+-export([init/1]).
+
+start_link() ->
+    supervisor:start_link({local, ?MODULE}, ?MODULE, []).
+
+init([]) ->
+    %% Child specs: {Name, StartFunc, Restart, Shutdown, Type, Modules}
+    SensorChild = {sensor_actor,
+                   {sensor_actor, start_link, []},
+                   permanent,
+                   5000,
+                   worker,
+                   [sensor_actor]},
+    AnalyticsChild = {analytics_actor,
+                      {analytics_actor, start_link, []},
+                      transient,       %% restart only on abnormal exit
+                      10000,
+                      worker,
+                      [analytics_actor]},
+    CommChild = {comm_actor,
+                 {comm_actor, start_link, []},
+                 permanent,
+                 5000,
+                 worker,
+                 [comm_actor]},
+    %% Max 3 restarts in 60 seconds to avoid restart storms
+    {ok, {{one_for_one, 3, 60}, [SensorChild, AnalyticsChild, CommChild]}}.
