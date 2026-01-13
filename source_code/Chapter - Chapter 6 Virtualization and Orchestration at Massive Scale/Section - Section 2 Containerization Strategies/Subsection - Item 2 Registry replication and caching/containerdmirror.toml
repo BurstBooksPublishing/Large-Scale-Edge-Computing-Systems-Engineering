@@ -1,0 +1,12 @@
+# /etc/containerd/config.toml (fragment) -- configure docker.io mirror
+[plugins."io.containerd.grpc.v1.cri".registry]
+  [plugins."io.containerd.grpc.v1.cri".registry.mirrors]
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."docker.io"]
+      endpoint = ["http://10.0.0.5:5000"]   # local pull-through cache endpoint
+  [plugins."io.containerd.grpc.v1.cri".registry.configs]
+    [plugins."io.containerd.grpc.v1.cri".registry.configs."10.0.0.5:5000".tls]
+      insecure_skip_verify = false           # set true only for trusted lab
+    [plugins."io.containerd.grpc.v1.cri".registry.configs."10.0.0.5:5000".auth]
+      # Use a credential store or static credentials; prefer OAuth token exchange.
+      username = "edge-cache-user"           # example; use secret manager in prod
+      password = "REDACTED"                  # populate via cloud-init or Vault
