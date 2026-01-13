@@ -1,0 +1,70 @@
+defmodule EdgeApp.Worker do
+  use GenServer
+
+  @failure_threshold 5        # open circuit after 5 failures
+  @reset_seconds 30           # try half-open after cooldown
+
+  # Client API
+  def start_link(opts), do: GenServer.start_link(__MODULE__, %{}, opts)
+
+  def handle_request(pid, msg), do: GenServer.call(pid, {:req, msg}, 5_000)
+
+  # Server callbacks
+  def init(state), do: {:ok, Map.merge(state, %{fail_count: 0, open_until: nil})}
+
+  def handle_call({:req, msg}, _from, %{open_until: t} = s) when not is_nil(t) do
+    if :os.system_time(:second) < t do
+      {:reply, {:error, :circuit_open}, s}          # fast fail while open
+    else
+      {:noreply, Map.put(s, :open_until, nil)}      # half-open: allow attempt
+      |> then(fn {_, new_s} -> handle_call({:req, msg}, _from, new_s) end)
+    end
+  end
+
+  def handle_call({:req, msg}, _from, state) do
+    case process_message(msg) do
+      {:ok, resp} ->
+        {:reply, {:ok, resp}, %{state | fail_count: 0}}
+      {:error, reason} ->
+        state2 = %{state | fail_count: state.fail_count + 1}
+        if state2.fail_count >= @failure_threshold do
+          # open circuit
+          open_until = :os.system_time(:second) + @reset_seconds
+          {:reply, {:error, :circuit_open}, %{state2 | open_until: open_until}}
+        else
+          {:reply, {:error, reason}, state2}
+        end
+    end
+  end
+
+  defp process_message(msg) do
+    # real processing, validate inputs, avoid crash on malformed data
+    try do
+      # perform computation; return {:ok, result} or {:error, reason}
+      {:ok, do_work(msg)}
+    rescue
+      _ -> {:error, :processing_failed}
+    end
+  end
+
+  defp do_work(msg), do: {:processed, msg} # placeholder
+end
+
+defmodule EdgeApp.Supervisor do
+  use Supervisor
+
+  def start_link(_), do: Supervisor.start_link(__MODULE__, :ok, name: __MODULE__)
+
+  def init(:ok) do
+    children = [
+      %{
+        id: EdgeApp.Worker,
+        start: {EdgeApp.Worker, :start_link, [[name: EdgeApp.Worker]]},
+        restart: :transient,
+        shutdown: 5_000
+      }
+    ]
+
+    Supervisor.init(children, strategy: :one_for_one)
+  end
+end
