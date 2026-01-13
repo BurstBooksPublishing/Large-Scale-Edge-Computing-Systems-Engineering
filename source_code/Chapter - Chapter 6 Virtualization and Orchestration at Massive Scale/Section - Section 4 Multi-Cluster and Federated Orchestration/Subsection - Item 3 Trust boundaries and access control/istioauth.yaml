@@ -1,0 +1,32 @@
+# Enforce STRICT mTLS for the namespace to guarantee identity presence.
+apiVersion: "security.istio.io/v1beta1"
+kind: PeerAuthentication
+metadata:
+  name: namespace-strict-mtls
+  namespace: production
+spec:
+  mtls:
+    mode: STRICT
+
+---
+# Allow only workloads with the specified SPIFFE principal from cluster-A.
+# Deny by omission; policies are additive for allowed principals.
+apiVersion: "security.istio.io/v1beta1"
+kind: AuthorizationPolicy
+metadata:
+  name: allow-cluster-a-control
+  namespace: production
+spec:
+  selector:
+    matchLabels:
+      app: control-api            # label on the service to protect
+  action: ALLOW
+  rules:
+  - from:
+    - source:
+        principals:
+        - "spiffe://example.org/clusterA/ns/control/sa/controller" # SPIFFE identity issued by SPIRE
+    when:
+    - key: request.auth.claims[role]
+      values: ["federation-controller"]  # optional claim check from JWT
+# Implicit deny for other principals ensures cross-cluster access is limited.
