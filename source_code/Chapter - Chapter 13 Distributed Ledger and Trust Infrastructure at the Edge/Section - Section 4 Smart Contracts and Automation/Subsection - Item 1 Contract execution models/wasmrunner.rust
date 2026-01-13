@@ -1,0 +1,21 @@
+use wasmtime::*; use reqwest::blocking::Client;
+// Load module, configure limits.
+let engine = Engine::new(Config::new().consume_fuel(true)).unwrap();
+let module = Module::from_file(&engine, "contract.wasm").unwrap();
+let mut store = Store::new(&engine, ());
+store.add_fuel(1_000_000).unwrap(); // limit CPU work
+// Host function to anchor a commitment to aggregator (HTTP POST).
+let anchor = Func::wrap(&mut store, |caller: Caller<'_, ()>, ptr: i32, len: i32| {
+    // read memory, compute commitment, and POST to aggregator.
+    // Inline comments show integration points for production code.
+    let mem = caller.get_export("memory").unwrap().into_memory().unwrap();
+    let data = mem.data(&caller)[ptr as usize..(ptr+len) as usize].to_vec();
+    let client = Client::new();
+    let _ = client.post("https://aggregator.local/anchor")
+        .body(data).send();
+    0i32
+});
+let instance = Instance::new(&mut store, &module, &[anchor.into()]).unwrap();
+// Call contract entrypoint deterministically.
+let run = instance.get_typed_func::<(), (), _>(&mut store, "execute").unwrap();
+run.call(&mut store, ()).unwrap();
