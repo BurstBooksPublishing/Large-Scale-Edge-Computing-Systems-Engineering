@@ -1,0 +1,56 @@
+stages:
+  - build
+  - test
+  - hil_gate
+
+variables:
+  DOCKER_BUILDKIT: "1"
+  PLATFORMS: "linux/amd64,linux/arm/v7,linux/arm64"
+
+build_multiarch:
+  stage: build
+  image: docker:20.10
+  services: [docker:dind]           # nested Docker for buildx
+  script:
+    - docker buildx create --use --name multiarch || true
+    - docker buildx build --push --platform $PLATFORMS -t registry.example.com/$CI_PROJECT_PATH:$CI_COMMIT_SHA .
+  only:
+    - branches
+
+qemu_integration_matrix:
+  stage: test
+  image: tonistiigi/binfmt:latest  # registers qemu emulators
+  parallel:
+    matrix:
+      - ARCH: amd64
+      - ARCH: arm
+      - ARCH: arm64
+  script:
+    - docker run --rm --privileged tonistiigi/binfmt --install all
+    - docker run --rm registry.example.com/$CI_PROJECT_PATH:$CI_COMMIT_SHA /ci/run_integration_tests.sh # runs pytest or gtest
+  artifacts:
+    when: always
+    paths: [test-reports/]
+  only:
+    - branches
+
+device_farm_hil:
+  stage: hil_gate
+  image: python:3.10
+  script:
+    - pip install requests
+    - >
+      python - <<'PY'
+      # trigger test on device farm; token stored in CI variable $DEVICE_FARM_TOKEN
+      import os, requests, json
+      api='https://device-farm.example.com/api/v1/runs'
+      headers={'Authorization':f"Bearer {os.environ['DEVICE_FARM_TOKEN']}"}
+      payload={'artifact':os.environ['CI_COMMIT_SHA'],'devices':['edge-rack-01']}
+      r=requests.post(api,headers=headers,json=payload,timeout=30)
+      r.raise_for_status()
+      print('HIL run started', r.json())
+      PY
+    - ./ci/wait_for_device_farm.sh $CI_JOB_ID  # polls farm, fetches junit results
+  when: manual                       # gate controlled in pipeline UI
+  only:
+    - tags
