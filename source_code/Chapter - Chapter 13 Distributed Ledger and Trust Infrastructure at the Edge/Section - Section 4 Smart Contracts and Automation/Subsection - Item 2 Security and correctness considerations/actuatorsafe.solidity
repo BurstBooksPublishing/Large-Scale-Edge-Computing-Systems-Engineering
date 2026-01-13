@@ -1,0 +1,40 @@
+pragma solidity ^0.8.20;
+// SPDX-License-Identifier: MIT
+import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/security/Pausable.sol";
+
+contract EdgeActuator is AccessControl, ReentrancyGuard, Pausable {
+    bytes32 public constant OPERATOR = keccak256("OPERATOR");
+    uint256 public constant SCALE = 1e6; // fixed-point scale
+    uint256 public lastActionTime;
+    uint256 public actionDelay; // seconds timelock
+
+    event ActuationRequested(bytes32 indexed requestId, uint256 value);
+    event Actuated(bytes32 indexed requestId, uint256 value);
+
+    constructor(uint256 _delay) {
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(OPERATOR, msg.sender);
+        actionDelay = _delay;
+    }
+
+    // Request actuate: stores request time; operator calls execute after delay.
+    function requestActuation(bytes32 requestId, uint256 scaledValue) external onlyRole(OPERATOR) whenNotPaused {
+        require(scaledValue <= 100*SCALE, "valueOutOfRange"); // safety bound
+        lastActionTime = block.timestamp;
+        emit ActuationRequested(requestId, scaledValue);
+    }
+
+    // Execute actuate after delay; nonReentrant prevents reentry.
+    function executeActuation(bytes32 requestId, uint256 scaledValue) external onlyRole(OPERATOR) nonReentrant whenNotPaused {
+        require(block.timestamp >= lastActionTime + actionDelay, "timelock");
+        // Checks-effects-interactions pattern: perform local checks, update state, then external call.
+        // External call to gateway signed by TEE should be handled off-chain by operator.
+        emit Actuated(requestId, scaledValue);
+    }
+
+    // Admin controls
+    function pause() external onlyRole(DEFAULT_ADMIN_ROLE) { _pause(); }
+    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) { _unpause(); }
+}
