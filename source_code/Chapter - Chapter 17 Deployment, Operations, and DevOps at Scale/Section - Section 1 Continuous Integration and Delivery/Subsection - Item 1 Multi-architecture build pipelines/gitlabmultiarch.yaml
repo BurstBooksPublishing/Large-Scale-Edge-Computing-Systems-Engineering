@@ -1,0 +1,70 @@
+# .gitlab-ci.yml - multi-arch production pipeline
+stages:
+  - prepare
+  - build
+  - test
+  - promote
+
+.variables:
+  IMAGE_NAME: registry.example.com/project/app
+  PLATFORMS: linux/amd64,linux/arm/v7,linux/arm64
+  BUILDX_BUILDER: edge-builder
+  CACHE_BUCKET: registry.example.com/project/cache
+
+prepare:
+  stage: prepare
+  image: docker:24.0.0
+  services:
+    - docker:dind
+  script:
+    - docker run --rm --privileged tonistiigi/binfmt:latest --install all   # enable QEMU
+    - docker buildx create --name $BUILDX_BUILDER --use --driver docker-container
+    - docker buildx inspect --bootstrap
+  tags:
+    - docker
+
+build:
+  stage: build
+  image: moby/buildkit:master
+  services:
+    - docker:dind
+  script:
+    - export BUILDKIT_PROGRESS=plain
+    # build and push with remote registry cache; SBOM via syft; sign with cosign
+    - docker buildx build \
+        --builder $BUILDX_BUILDER \
+        --platform $PLATFORMS \
+        --cache-to type=registry,ref=$CACHE_BUCKET/buildcache:latest,mode=max \
+        --cache-from type=registry,ref=$CACHE_BUCKET/buildcache:latest \
+        --tag $IMAGE_NAME:$CI_COMMIT_SHORT_SHA \
+        --tag $IMAGE_NAME:latest \
+        --sbom=true \
+        --output type=image,push=true \
+        .
+    - syft $IMAGE_NAME:$CI_COMMIT_SHORT_SHA -o json > sbom.json        # generate machine SBOM
+    - cosign sign --key cosign.key $IMAGE_NAME:$CI_COMMIT_SHORT_SHA   # sign image manifest
+  artifacts:
+    paths:
+      - sbom.json
+  tags:
+    - buildkit
+
+test:
+  stage: test
+  image: docker:24.0.0
+  script:
+    # run fast unit tests in emulation for each arch; prefer real hardware when available
+    - docker run --rm --platform linux/arm64 $IMAGE_NAME:$CI_COMMIT_SHORT_SHA /usr/bin/unit-test
+    - docker run --rm --platform linux/arm/v7 $IMAGE_NAME:$CI_COMMIT_SHORT_SHA /usr/bin/unit-test
+  tags:
+    - docker
+
+promote:
+  stage: promote
+  image: curlimages/curl:8.2.1
+  script:
+    # push metadata to TUF repository and update OTA channels
+    - curl -X POST "https://tuf.example.com/api/promote" -d '{"image":"'"$IMAGE_NAME:$CI_COMMIT_SHORT_SHA"'","channels":["stable"]}'
+  when: manual
+  tags:
+    - ops
