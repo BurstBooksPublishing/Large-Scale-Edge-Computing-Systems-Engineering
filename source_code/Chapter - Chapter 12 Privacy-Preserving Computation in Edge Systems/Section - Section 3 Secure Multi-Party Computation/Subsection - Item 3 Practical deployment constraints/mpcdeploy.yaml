@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mpc-worker
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mpc-worker
+  template:
+    metadata:
+      labels:
+        app: mpc-worker
+    spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64           # prefer x86 for heavy crypto
+      tolerations:
+        - key: "edge"
+          operator: "Exists"
+          effect: "NoSchedule"
+      containers:
+        - name: mpc-runtime
+          image: myregistry/mpc-runtime:stable  # MP-SPDZ or custom runtime
+          args: ["--party-id","$(PARTY_ID)","--config","/etc/mpc/config.json"]
+          env:
+            - name: PARTY_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          resources:
+            limits:
+              cpu: "2"         # cap CPU for multi-tenant edge nodes
+              memory: "2Gi"
+            requests:
+              cpu: "1"
+              memory: "1Gi"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          readinessProbe:
+            tcpSocket:
+              port: 9000        # MPC peer port
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: mpc-secrets
+              mountPath: /etc/mpc
+              readOnly: true
+      volumes:
+        - name: mpc-secrets
+          secret:
+            secretName: mpc-secret-conf   # TLS and key material stored as Kubernetes Secret
